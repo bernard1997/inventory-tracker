@@ -1,9 +1,8 @@
-# 🛍️ Inventory tracker template
+# 🛍️ Publications for divison of surgery SGH
 
-A Streamlit app showing how to use `st.data_editor` to read and modify a database. Behind the scenes
-this uses a simple SQLite database, but you can easily replace it with whatever your favorite DB is.
+Check the publications from an author
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://inventory-tracker-template.streamlit.app/)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://publication-division-of-surgery.streamlit.app/)
 
 ### How to run it on your own machine
 
