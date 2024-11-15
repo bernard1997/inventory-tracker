@@ -1,290 +1,118 @@
-from collections import defaultdict
-from pathlib import Path
-import sqlite3
+# -*- coding: utf-8 -*-
 
 import streamlit as st
-import altair as alt
-import pandas as pd
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+import time
 
+def search_pubmed(author, affiliation, start_year, end_year, email):
+    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    query = f"{author}[Author] AND {affiliation}[Affiliation] AND ({start_year}:{end_year}[Date - Publication])"
+   
+    params = {
+        "db": "pubmed",
+        "term": query,
+        "retmax": 100,
+        "retmode": "xml",
+        "tool": "MyTool",
+        "email": email
+    }
+   
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url) as response:
+        root = ET.fromstring(response.read())
+   
+    id_list = [id_elem.text for id_elem in root.findall(".//Id")]
+    return id_list
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title="Inventory tracker",
-    page_icon=":shopping_bags:",  # This is an emoji shortcode. Could be a URL too.
-)
+def fetch_citations(id_list, email):
+    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    ids = ",".join(id_list)
+   
+    params = {
+        "db": "pubmed",
+        "id": ids,
+        "retmode": "xml",
+        "rettype": "medline",
+        "tool": "MyTool",
+        "email": email
+    }
+   
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url) as response:
+        root = ET.fromstring(response.read())
+   
+    citations = []
+    for article in root.findall(".//PubmedArticle"):
+        # Title
+        title = article.find(".//ArticleTitle").text
+       
+        # DOI
+        doi_elem = article.find(".//ArticleId[@IdType='doi']")
+        doi = doi_elem.text if doi_elem is not None else "N/A"
+       
+        # Authors
+        authors = []
+        for author in article.findall(".//Author"):
+            last_name = author.find("LastName")
+            initials = author.find("Initials")
+            if last_name is not None and initials is not None:
+                authors.append(f"{last_name.text} {initials.text}")
+        authors_str = ", ".join(authors)
+       
+        # Details
+        journal = article.find(".//Journal/Title").text
+        year = article.find(".//PubDate/Year")
+        year = year.text if year is not None else ""
+        volume = article.find(".//Volume")
+        volume = volume.text if volume is not None else ""
+        issue = article.find(".//Issue")
+        issue = issue.text if issue is not None else ""
+        pages = article.find(".//MedlinePgn")
+        pages = pages.text if pages is not None else ""
+       
+        details = f"{journal}. {year}"
+        if volume:
+            details += f";{volume}"
+        if issue:
+            details += f"({issue})"
+        if pages:
+            details += f":{pages}"
+       
+        # PubMed ID
+        pmid = article.find(".//PMID").text
+       
+        # Construct NLM format citation
+        citation = f"{title}. doi: {doi}. {authors_str}. {details}. PubMed PMID: {pmid}."
+        citations.append(citation)
+   
+    return citations
 
+def main():
+    st.title("PubMed Author Search")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+    # User inputs
+    email = st.text_input("Enter your email")
+    author = st.text_input("Enter the author name")
+    affiliation = st.text_input("Enter the institution name")
+    start_year = st.text_input("Enter start year (e.g., 2020)", "2024")
+    end_year = st.text_input("Enter end year (e.g., 2024)", "2024")
+    
+    # Search and display results
+    if st.button("Search Publications"):
+        if email and author and affiliation:
+            st.write(f"Searching for publications by {author} from {affiliation} between {start_year} and {end_year}:")
+            id_list = search_pubmed(author, affiliation, start_year, end_year, email)
+           
+            if id_list:
+                citations = fetch_citations(id_list, email)
+                for citation in citations:
+                    st.write(citation)
+            else:
+                st.write("No publications found.")
+        else:
+            st.error("Please provide your email, author name, and institution name.")
 
-
-def connect_db():
-    """Connects to the sqlite database."""
-
-    DB_FILENAME = Path(__file__).parent / "inventory.db"
-    db_already_exists = DB_FILENAME.exists()
-
-    conn = sqlite3.connect(DB_FILENAME)
-    db_was_just_created = not db_already_exists
-
-    return conn, db_was_just_created
-
-
-def initialize_data(conn):
-    """Initializes the inventory table with some data."""
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_name TEXT,
-            price REAL,
-            units_sold INTEGER,
-            units_left INTEGER,
-            cost_price REAL,
-            reorder_point INTEGER,
-            description TEXT
-        )
-        """
-    )
-
-    cursor.execute(
-        """
-        INSERT INTO inventory
-            (item_name, price, units_sold, units_left, cost_price, reorder_point, description)
-        VALUES
-            -- Beverages
-            ('Bottled Water (500ml)', 1.50, 115, 15, 0.80, 16, 'Hydrating bottled water'),
-            ('Soda (355ml)', 2.00, 93, 8, 1.20, 10, 'Carbonated soft drink'),
-            ('Energy Drink (250ml)', 2.50, 12, 18, 1.50, 8, 'High-caffeine energy drink'),
-            ('Coffee (hot, large)', 2.75, 11, 14, 1.80, 5, 'Freshly brewed hot coffee'),
-            ('Juice (200ml)', 2.25, 11, 9, 1.30, 5, 'Fruit juice blend'),
-
-            -- Snacks
-            ('Potato Chips (small)', 2.00, 34, 16, 1.00, 10, 'Salted and crispy potato chips'),
-            ('Candy Bar', 1.50, 6, 19, 0.80, 15, 'Chocolate and candy bar'),
-            ('Granola Bar', 2.25, 3, 12, 1.30, 8, 'Healthy and nutritious granola bar'),
-            ('Cookies (pack of 6)', 2.50, 8, 8, 1.50, 5, 'Soft and chewy cookies'),
-            ('Fruit Snack Pack', 1.75, 5, 10, 1.00, 8, 'Assortment of dried fruits and nuts'),
-
-            -- Personal Care
-            ('Toothpaste', 3.50, 1, 9, 2.00, 5, 'Minty toothpaste for oral hygiene'),
-            ('Hand Sanitizer (small)', 2.00, 2, 13, 1.20, 8, 'Small sanitizer bottle for on-the-go'),
-            ('Pain Relievers (pack)', 5.00, 1, 5, 3.00, 3, 'Over-the-counter pain relief medication'),
-            ('Bandages (box)', 3.00, 0, 10, 2.00, 5, 'Box of adhesive bandages for minor cuts'),
-            ('Sunscreen (small)', 5.50, 6, 5, 3.50, 3, 'Small bottle of sunscreen for sun protection'),
-
-            -- Household
-            ('Batteries (AA, pack of 4)', 4.00, 1, 5, 2.50, 3, 'Pack of 4 AA batteries'),
-            ('Light Bulbs (LED, 2-pack)', 6.00, 3, 3, 4.00, 2, 'Energy-efficient LED light bulbs'),
-            ('Trash Bags (small, 10-pack)', 3.00, 5, 10, 2.00, 5, 'Small trash bags for everyday use'),
-            ('Paper Towels (single roll)', 2.50, 3, 8, 1.50, 5, 'Single roll of paper towels'),
-            ('Multi-Surface Cleaner', 4.50, 2, 5, 3.00, 3, 'All-purpose cleaning spray'),
-
-            -- Others
-            ('Lottery Tickets', 2.00, 17, 20, 1.50, 10, 'Assorted lottery tickets'),
-            ('Newspaper', 1.50, 22, 20, 1.00, 5, 'Daily newspaper')
-        """
-    )
-    conn.commit()
-
-
-def load_data(conn):
-    """Loads the inventory data from the database."""
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute("SELECT * FROM inventory")
-        data = cursor.fetchall()
-    except:
-        return None
-
-    df = pd.DataFrame(
-        data,
-        columns=[
-            "id",
-            "item_name",
-            "price",
-            "units_sold",
-            "units_left",
-            "cost_price",
-            "reorder_point",
-            "description",
-        ],
-    )
-
-    return df
-
-
-def update_data(conn, df, changes):
-    """Updates the inventory data in the database."""
-    cursor = conn.cursor()
-
-    if changes["edited_rows"]:
-        deltas = st.session_state.inventory_table["edited_rows"]
-        rows = []
-
-        for i, delta in deltas.items():
-            row_dict = df.iloc[i].to_dict()
-            row_dict.update(delta)
-            rows.append(row_dict)
-
-        cursor.executemany(
-            """
-            UPDATE inventory
-            SET
-                item_name = :item_name,
-                price = :price,
-                units_sold = :units_sold,
-                units_left = :units_left,
-                cost_price = :cost_price,
-                reorder_point = :reorder_point,
-                description = :description
-            WHERE id = :id
-            """,
-            rows,
-        )
-
-    if changes["added_rows"]:
-        cursor.executemany(
-            """
-            INSERT INTO inventory
-                (id, item_name, price, units_sold, units_left, cost_price, reorder_point, description)
-            VALUES
-                (:id, :item_name, :price, :units_sold, :units_left, :cost_price, :reorder_point, :description)
-            """,
-            (defaultdict(lambda: None, row) for row in changes["added_rows"]),
-        )
-
-    if changes["deleted_rows"]:
-        cursor.executemany(
-            "DELETE FROM inventory WHERE id = :id",
-            ({"id": int(df.loc[i, "id"])} for i in changes["deleted_rows"]),
-        )
-
-    conn.commit()
-
-
-# -----------------------------------------------------------------------------
-# Draw the actual page, starting with the inventory table.
-
-# Set the title that appears at the top of the page.
-"""
-# :shopping_bags: Inventory tracker
-
-**Welcome to Alice's Corner Store's intentory tracker!**
-This page reads and writes directly from/to our inventory database.
-"""
-
-st.info(
-    """
-    Use the table below to add, remove, and edit items.
-    And don't forget to commit your changes when you're done.
-    """
-)
-
-# Connect to database and create table if needed
-conn, db_was_just_created = connect_db()
-
-# Initialize data.
-if db_was_just_created:
-    initialize_data(conn)
-    st.toast("Database initialized with some sample data.")
-
-# Load data from database
-df = load_data(conn)
-
-# Display data with editable table
-edited_df = st.data_editor(
-    df,
-    disabled=["id"],  # Don't allow editing the 'id' column.
-    num_rows="dynamic",  # Allow appending/deleting rows.
-    column_config={
-        # Show dollar sign before price columns.
-        "price": st.column_config.NumberColumn(format="$%.2f"),
-        "cost_price": st.column_config.NumberColumn(format="$%.2f"),
-    },
-    key="inventory_table",
-)
-
-has_uncommitted_changes = any(len(v) for v in st.session_state.inventory_table.values())
-
-st.button(
-    "Commit changes",
-    type="primary",
-    disabled=not has_uncommitted_changes,
-    # Update data in database
-    on_click=update_data,
-    args=(conn, df, st.session_state.inventory_table),
-)
-
-
-# -----------------------------------------------------------------------------
-# Now some cool charts
-
-# Add some space
-""
-""
-""
-
-st.subheader("Units left", divider="red")
-
-need_to_reorder = df[df["units_left"] < df["reorder_point"]].loc[:, "item_name"]
-
-if len(need_to_reorder) > 0:
-    items = "\n".join(f"* {name}" for name in need_to_reorder)
-
-    st.error(f"We're running dangerously low on the items below:\n {items}")
-
-""
-""
-
-st.altair_chart(
-    # Layer 1: Bar chart.
-    alt.Chart(df)
-    .mark_bar(
-        orient="horizontal",
-    )
-    .encode(
-        x="units_left",
-        y="item_name",
-    )
-    # Layer 2: Chart showing the reorder point.
-    + alt.Chart(df)
-    .mark_point(
-        shape="diamond",
-        filled=True,
-        size=50,
-        color="salmon",
-        opacity=1,
-    )
-    .encode(
-        x="reorder_point",
-        y="item_name",
-    ),
-    use_container_width=True,
-)
-
-st.caption("NOTE: The :diamonds: location shows the reorder point.")
-
-""
-""
-""
-
-# -----------------------------------------------------------------------------
-
-st.subheader("Best sellers", divider="orange")
-
-""
-""
-
-st.altair_chart(
-    alt.Chart(df)
-    .mark_bar(orient="horizontal")
-    .encode(
-        x="units_sold",
-        y=alt.Y("item_name").sort("-x"),
-    ),
-    use_container_width=True,
-)
+if __name__ == "__main__":
+    main()
